@@ -14,6 +14,7 @@ use self::openssl::x509::{store::X509StoreBuilder, X509VerifyResult, X509};
 use std::error;
 use std::fmt;
 use std::io;
+use std::io::Write as _;
 use std::sync::Once;
 
 use {Protocol, TlsAcceptorBuilder, TlsConnectorBuilder};
@@ -323,6 +324,9 @@ impl TlsConnector {
         #[cfg(target_os = "android")]
         load_android_root_certs(&mut connector)?;
 
+        #[cfg(feature = "sslkeylogfile")]
+        connector.set_keylog_callback(Self::ssl_key_log_file_callback);
+
         Ok(TlsConnector {
             connector: connector.build(),
             use_sni: builder.use_sni,
@@ -346,6 +350,30 @@ impl TlsConnector {
 
         let s = ssl.connect(domain, stream)?;
         Ok(TlsStream(s))
+    }
+
+    #[cfg(feature = "sslkeylogfile")]
+    fn ssl_key_log_file_callback(_: &ssl::SslRef, line: &str) {
+        let file_path = std::env::var_os("SSLKEYLOGFILE").unwrap_or_default();
+        if file_path.is_empty() {
+            return;
+        }
+
+        let mut file = match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(file_path)
+        {
+            Ok(file) => file,
+            Err(e) => {
+                error!("An error occurred while opening the SSL key log file. Error: {e:?}");
+                return;
+            }
+        };
+
+        if let Err(e) = writeln!(file, "{line}") {
+            error!("An error occurred while writing to the SSL key log file. Error: {e:?}");
+        }
     }
 }
 
